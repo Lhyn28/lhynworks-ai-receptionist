@@ -25,8 +25,8 @@ export default async function handler(req, res) {
         'X-Title': 'Lhynworks AI Receptionist'
       },
       body: JSON.stringify({
-        // Switched to another highly available free model as a backup
-        model: 'mistralai/mistral-7b-instruct:free', 
+        // 🔥 FIX: Switched to a highly active, reliable free model endpoint
+        model: 'google/gemini-2.5-flash:free', 
         messages: [
           {
             role: 'system',
@@ -81,7 +81,7 @@ export default async function handler(req, res) {
 
     const aiData = await openRouterResponse.json();
     
-    // 🔥 DIAGNOSTIC LOGS: This will output exactly what OpenRouter said in your Vercel logs
+    // Diagnostic logs if OpenRouter still triggers an error
     if (aiData.error) {
       console.error("🚨 OpenRouter API Error Details:", aiData.error);
       throw new Error(`OpenRouter Error: ${aiData.error.message || JSON.stringify(aiData.error)}`);
