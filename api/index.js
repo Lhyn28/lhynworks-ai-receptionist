@@ -29,7 +29,6 @@ export default async function handler(req, res) {
       const historyData = await historyResponse.json();
       
       if (historyData.messages) {
-        // Map GHL messages to standard AI format (sorting oldest to newest)
         formattedHistory = historyData.messages.reverse().map(msg => ({
           role: msg.direction === 'inbound' ? 'user' : 'assistant',
           content: msg.body
@@ -55,16 +54,14 @@ export default async function handler(req, res) {
       6. If they say "Thank you", politely say "You're welcome!", summarize, and say goodbye.`
     };
 
-    // Combine system message + conversation history + the latest incoming message
     const openRouterMessages = [systemMessage, ...formattedHistory];
     
-    // Safety check: if history is empty, manually push the current message
     if (formattedHistory.length === 0) {
       openRouterMessages.push({ role: 'user', content: customerMessage });
     }
 
     // 2. Requesting OpenRouter
-    console.log("🛰️ Sending request to OpenRouter using high-speed Gemma...");
+    console.log("🛰️ Sending request to OpenRouter using Gemini Flash...");
     const openRouterResponse = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -74,8 +71,8 @@ export default async function handler(req, res) {
         'X-Title': 'Lhynworks AI Receptionist'
       },
       body: JSON.stringify({
-        // Targeting Gemma 3 4B for blazing-fast edge speeds on the free tier
-        model: 'google/gemma-3-4b-it:free', 
+        // Gemini handles tools better on the free tier than Gemma
+        model: 'google/gemini-2.5-flash:free', 
         messages: openRouterMessages,
         tools: [
           {
