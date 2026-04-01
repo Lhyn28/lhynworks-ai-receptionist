@@ -7,7 +7,6 @@ export default async function handler(req, res) {
     const data = req.body;
     console.log("📥 Incoming webhook payload:", JSON.stringify(data));
     
-    // Extracting mapped variables from customData
     const customerMessage = data.customData?.message || data.message?.body || data.message || "Hello";
     const contactId = data.customData?.id || data.contact_id || data.id;
 
@@ -19,7 +18,7 @@ export default async function handler(req, res) {
     }
 
     // 1. Requesting OpenRouter
-    console.log("🛰️ Sending request to OpenRouter...");
+    console.log("🛰️ Sending request to OpenRouter (using free models pool)...");
     const openRouterResponse = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -29,7 +28,13 @@ export default async function handler(req, res) {
         'X-Title': 'Lhynworks AI Receptionist'
       },
       body: JSON.stringify({
-        model: 'openrouter/auto', 
+        // Primary model is Qwen (Free). 
+        model: 'qwen/qwen3.6-plus-preview:free',
+        // Fallbacks automatically trigger if Qwen is offline or rate-limited!
+        fallback_models: [
+          'mistralai/mistral-7b-instruct:free',
+          'google/gemini-2.5-flash:free'
+        ],
         messages: [
           {
             role: 'system',
