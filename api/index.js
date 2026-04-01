@@ -5,13 +5,16 @@ export default async function handler(req, res) {
 
   try {
     const data = req.body;
+    console.log("📥 Incoming webhook payload:", JSON.stringify(data));
     
-    const customerMessage = data.message?.body || data.text || data.message || "Hello";
-    const contactId = data.contact?.id || data.contact_id || data.id;
+    // Mapping EXACTLY to your GHL screenshot: message and id
+    const customerMessage = data.message || "Hello";
+    const contactId = data.id;
 
-    if (!customerMessage || !contactId) {
-      console.log("⚠️ Received incomplete body:", data);
-      return res.status(400).json({ error: 'Missing data from GHL' });
+    // Strict validation to see if data is still dropping
+    if (!contactId) {
+      console.log("⚠️ Missing contact ID in payload.");
+      return res.status(400).json({ error: 'Missing contact id from GHL' });
     }
 
     // 1. Requesting OpenRouter
@@ -24,7 +27,6 @@ export default async function handler(req, res) {
         'X-Title': 'Lhynworks AI Receptionist'
       },
       body: JSON.stringify({
-        // 🔥 FIX: Using 'openrouter/auto' so it auto-picks the best online free model!
         model: 'openrouter/auto', 
         messages: [
           {
@@ -151,6 +153,7 @@ export default async function handler(req, res) {
 
     const replyText = responseMessage.content || "Thanks for messaging! How can I help you today?";
 
+    // 3. Normal conversation reply
     await fetch('https://services.leadconnectorhq.com/conversations/messages', {
       method: 'POST',
       headers: {
