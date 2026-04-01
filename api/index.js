@@ -7,11 +7,11 @@ export default async function handler(req, res) {
     const data = req.body;
     console.log("📥 Incoming webhook payload:", JSON.stringify(data));
     
-    // Mapping EXACTLY to your GHL screenshot: message and id
-    const customerMessage = data.message || "Hello";
-    const contactId = data.id;
+    // 🔥 FIX: Mapping strictly to your GHL execution logs payload
+    const customerMessage = data.customData?.message || data.message?.body || data.message || "Hello";
+    const contactId = data.customData?.id || data.contact_id || data.id;
 
-    // Strict validation to see if data is still dropping
+    // Strict validation
     if (!contactId) {
       console.log("⚠️ Missing contact ID in payload.");
       return res.status(400).json({ error: 'Missing contact id from GHL' });
