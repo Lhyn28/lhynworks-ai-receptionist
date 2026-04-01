@@ -10,15 +10,61 @@ export default async function handler(req, res) {
     const customerMessage = data.customData?.message || data.message?.body || data.message || "Hello";
     const contactId = data.customData?.id || data.contact_id || data.id;
 
-    console.log(`🔍 Extracted -> Message: "${customerMessage}" | Contact ID: ${contactId}`);
-
     if (!contactId) {
-      console.log("⚠️ Stopping: Missing contact ID in payload.");
+      console.log("⚠️ Stopping: Missing contact ID.");
       return res.status(400).json({ error: 'Missing contact id from GHL' });
     }
 
-    // 1. Requesting OpenRouter
-    console.log("🛰️ Sending request to OpenRouter (using free models pool)...");
+    // 1. Fetch the last 10 messages from GHL so the bot has memory!
+    let formattedHistory = [];
+    try {
+      console.log("📜 Fetching conversation history from GHL...");
+      const historyResponse = await fetch(`https://services.leadconnectorhq.com/conversations/messages?contactId=${contactId}&limit=10`, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${process.env.GHL_API_KEY}`,
+          'Version': '2021-04-15'
+        }
+      });
+      const historyData = await historyResponse.json();
+      
+      if (historyData.messages) {
+        // Map GHL messages to standard AI format (sorting oldest to newest)
+        formattedHistory = historyData.messages.reverse().map(msg => ({
+          role: msg.direction === 'inbound' ? 'user' : 'assistant',
+          content: msg.body
+        }));
+      }
+    } catch (e) {
+      console.log("⚠️ Could not retrieve history, proceeding without it:", e.message);
+    }
+
+    // Build OpenRouter messages array
+    const systemMessage = {
+      role: 'system',
+      content: `You are Lhyn's AI double representing Lhynworks. You are incredibly polite, warm, and human. 
+      Follow this strict sequence of rules:
+      1. Greet the user with: "Hi! Good morning! How are you? I'm Lhyn, may I know your name?"
+      2. After they give their name, politely ask for their email address: "Great to meet you! Can I get your email real quick? That way we can email you in case you ever need my services."
+      3. Once you have both the name and email, use the 'upsertContact' function to save their data in GoHighLevel. After executing it, ask them how you can help them.
+      4. Use the following knowledge base to answer questions about services and pricing:
+         - About Lhyn: GoHighLevel Tech VA for Coaches & Agencies.
+         - Services: Funnels & Landing Pages, Tech Setup & DNS, Workflows & CRM Management.
+         - Pricing: Custom services generally start at around $250 for smaller setups and up to $1,000+ for full account overhauls. Give ballpark estimates and suggest a call.
+      5. If they agree to book a call, use the 'bookAndAlert' function to book the call.
+      6. If they say "Thank you", politely say "You're welcome!", summarize, and say goodbye.`
+    };
+
+    // Combine system message + conversation history + the latest incoming message
+    const openRouterMessages = [systemMessage, ...formattedHistory];
+    
+    // Safety check: if history is empty, manually push the current message
+    if (formattedHistory.length === 0) {
+      openRouterMessages.push({ role: 'user', content: customerMessage });
+    }
+
+    // 2. Requesting OpenRouter
+    console.log("🛰️ Sending request to OpenRouter using high-speed Gemma...");
     const openRouterResponse = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -28,30 +74,9 @@ export default async function handler(req, res) {
         'X-Title': 'Lhynworks AI Receptionist'
       },
       body: JSON.stringify({
-        // Primary model is Qwen (Free). 
-        model: 'qwen/qwen3.6-plus-preview:free',
-        // Fallbacks automatically trigger if Qwen is offline or rate-limited!
-        fallback_models: [
-          'mistralai/mistral-7b-instruct:free',
-          'google/gemini-2.5-flash:free'
-        ],
-        messages: [
-          {
-            role: 'system',
-            content: `You are Lhyn's AI double representing Lhynworks. You are incredibly polite, warm, and human. 
-            Follow this strict sequence of rules:
-            1. Greet the user with: "Hi! Good morning! How are you? I'm Lhyn, may I know your name?"
-            2. After they give their name, politely ask for their email address: "Great to meet you! Can I get your email real quick? That way we can email you in case you ever need my services."
-            3. Once you have both the name and email, use the 'upsertContact' function to save their data in GoHighLevel. After executing it, ask them how you can help them.
-            4. Use the following knowledge base to answer questions about services and pricing:
-               - About Lhyn: GoHighLevel Tech VA for Coaches & Agencies.
-               - Services: Funnels & Landing Pages, Tech Setup & DNS, Workflows & CRM Management.
-               - Pricing: Custom services generally start at around $250 for smaller setups and up to $1,000+ for full account overhauls. Give ballpark estimates and suggest a call.
-            5. If they agree to book a call, use the 'bookAndAlert' function to book the call.
-            6. If they say "Thank you", politely say "You're welcome!", summarize, and say goodbye.`
-          },
-          { role: 'user', content: customerMessage }
-        ],
+        // Targeting Gemma 3 4B for blazing-fast edge speeds on the free tier
+        model: 'google/gemma-3-4b-it:free', 
+        messages: openRouterMessages,
         tools: [
           {
             type: "function",
@@ -90,26 +115,16 @@ export default async function handler(req, res) {
     const aiData = await openRouterResponse.json();
     console.log("📥 OpenRouter raw response received.");
     
-    if (aiData.error) {
-      console.error("🚨 OpenRouter API Error Details:", aiData.error);
-      throw new Error(`OpenRouter Error: ${aiData.error.message || JSON.stringify(aiData.error)}`);
-    }
-
-    if (!aiData.choices || aiData.choices.length === 0) {
-      console.error("🚨 OpenRouter returned no choices. Full response:", JSON.stringify(aiData));
-      throw new Error("OpenRouter did not return valid completion data.");
-    }
+    if (aiData.error) throw new Error(`OpenRouter Error: ${aiData.error.message}`);
     
     const responseMessage = aiData.choices[0].message;
 
-    // 2. Executing Function Calls (GHL Automations)
+    // 3. Executing Function Calls (GHL Automations)
     if (responseMessage.tool_calls) {
-      console.log("⚙️ AI triggered a function call.");
       const toolCall = responseMessage.tool_calls[0];
       const args = JSON.parse(toolCall.function.arguments);
 
       if (toolCall.function.name === "upsertContact") {
-        console.log("🛠️ Executing upsertContact in GHL...");
         await fetch('https://services.leadconnectorhq.com/contacts/', {
           method: 'POST',
           headers: {
@@ -128,7 +143,6 @@ export default async function handler(req, res) {
       }
 
       if (toolCall.function.name === "bookAndAlert") {
-        console.log("🛠️ Executing bookAndAlert in GHL...");
         await fetch('https://services.leadconnectorhq.com/calendars/appointments', {
           method: 'POST',
           headers: {
@@ -144,28 +158,13 @@ export default async function handler(req, res) {
           })
         });
 
-        await fetch(`https://services.leadconnectorhq.com/contacts/${contactId}/tasks`, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${process.env.GHL_API_KEY}`,
-            'Content-Type': 'application/json',
-            'Version': '2021-07-28'
-          },
-          body: JSON.stringify({
-            title: `AI Alert: Needs help with ${args.clientProblem}`,
-            body: `This client booked a call for ${args.startTime} and needs help with: ${args.clientProblem}`,
-            dueDate: new Date().toISOString()
-          })
-        });
-
-        return res.status(200).json({ success: true, reply: "Fantastic! You are all booked in. I've sent a summary of what you need to our team, and we will talk to you soon!" });
+        return res.status(200).json({ success: true, reply: "Fantastic! You are all booked in. We will talk to you soon!" });
       }
     }
 
     const replyText = responseMessage.content || "Thanks for messaging! How can I help you today?";
-    console.log(`💬 AI response prepared: "${replyText}"`);
 
-    // 3. Normal conversation reply
+    // 4. Normal conversation reply
     console.log("📤 Sending message back to GHL conversation...");
     const ghlMessageResponse = await fetch('https://services.leadconnectorhq.com/conversations/messages', {
       method: 'POST',
