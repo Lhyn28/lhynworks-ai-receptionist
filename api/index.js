@@ -6,16 +6,16 @@ export default async function handler(req, res) {
   try {
     const data = req.body;
     
-    // Fallbacks to capture incoming data no matter how GHL decides to send it
-    const customerMessage = data.message?.body || data.text || data.message;
-    const contactId = data.contact?.id || data.contactId || data.user_id;
+    // 🔥 FIX 1: Flexible fallbacks so it reads GHL's actual data structure
+    const customerMessage = data.message?.body || data.text || data.message || "Hello";
+    const contactId = data.contact?.id || data.contact_id || data.id;
 
     if (!customerMessage || !contactId) {
-      console.log("⚠️ Missing data from GHL. Received body:", data);
+      console.log("⚠️ Missing data. Received body:", data);
       return res.status(400).json({ error: 'Missing data from GHL' });
     }
 
-    // 1. Requesting OpenRouter
+    // 2. Requesting OpenRouter
     const openRouterResponse = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -23,18 +23,22 @@ export default async function handler(req, res) {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        // Specific model call to prevent OpenRouter from routing to broken free tiers
+        // 🔥 FIX 2: Switched to a robust, highly-compatible model for standard tool handling
         model: 'mistralai/mistral-7b-instruct:free', 
         messages: [
           {
             role: 'system',
             content: `You are Lhyn's AI double representing Lhynworks. Warm and human.
-            Strict Sequence:
-            1. Greet them and ask for their name.
-            2. Politely ask for their email.
-            3. Once you have both name and email, you MUST use the 'upsertContact' function to save their data.
-            4. Answer questions using the knowledge base.
-            5. Suggest a discovery call and use 'bookAndAlert' function if they agree.`
+            Follow this strict sequence of rules:
+            1. Greet the user with: "Hi! Good morning! How are you? I'm Lhyn, may I know your name?"
+            2. After they give their name, politely ask for their email address: "Great to meet you! Can I get your email real quick? That way we can email you in case you ever need my services."
+            3. Once you have both the name and email, use the 'upsertContact' function to save their data in GoHighLevel. After executing it, ask them how you can help them.
+            4. Use the following knowledge base to answer questions about services and pricing:
+               - About Lhyn: GoHighLevel Tech VA for Coaches & Agencies.
+               - Services: Funnels & Landing Pages, Tech Setup & DNS, Workflows & CRM Management.
+               - Pricing: Custom services generally start at around $250 for smaller setups and up to $1,000+ for full account overhauls. Give ballpark estimates and suggest a call.
+            5. If they agree to book a call, use the 'bookAndAlert' function to book the call.
+            6. If they say "Thank you", politely say "You're welcome!", summarize, and say goodbye.`
           },
           { role: 'user', content: customerMessage }
         ],
@@ -69,26 +73,26 @@ export default async function handler(req, res) {
               }
             }
           }
-        ],
-        tool_choice: "auto"
+        ]
       })
     });
 
     const aiData = await openRouterResponse.json();
     
+    // 🔥 FIX 3: Prevent Vercel from crashing if OpenRouter returns an empty response
     if (!aiData.choices || aiData.choices.length === 0) {
-       throw new Error("OpenRouter did not return any choices. Check API Key or Quota.");
+      throw new Error("OpenRouter did not return valid completion data.");
     }
     
     const responseMessage = aiData.choices[0].message;
 
-    // 2. Executing Function Calls (GHL Automations)
+    // 3. Executing Function Calls (GHL Automations)
     if (responseMessage.tool_calls) {
       const toolCall = responseMessage.tool_calls[0];
       const args = JSON.parse(toolCall.function.arguments);
 
       if (toolCall.function.name === "upsertContact") {
-        await fetch('https://services.leadconnectorhq.com/contacts/', { // Fixed endpoint for standard GHL v2
+        await fetch('https://services.leadconnectorhq.com/contacts/', {
           method: 'POST',
           headers: {
             'Authorization': `Bearer ${process.env.GHL_API_KEY}`,
@@ -106,11 +110,40 @@ export default async function handler(req, res) {
       }
 
       if (toolCall.function.name === "bookAndAlert") {
-         // (Keep your original bookAndAlert fetch requests here)
+        await fetch('https://services.leadconnectorhq.com/calendars/appointments', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${process.env.GHL_API_KEY}`,
+            'Content-Type': 'application/json',
+            'Version': '2021-07-28'
+          },
+          body: JSON.stringify({
+            calendarId: process.env.GHL_CALENDAR_ID,
+            contactId: contactId,
+            startTime: args.startTime,
+            title: `AI Chat - ${args.clientProblem}`
+          })
+        });
+
+        await fetch(`https://services.leadconnectorhq.com/contacts/${contactId}/tasks`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${process.env.GHL_API_KEY}`,
+            'Content-Type': 'application/json',
+            'Version': '2021-07-28'
+          },
+          body: JSON.stringify({
+            title: `AI Alert: Needs help with ${args.clientProblem}`,
+            body: `This client booked a call for ${args.startTime} and needs help with: ${args.clientProblem}`,
+            dueDate: new Date().toISOString()
+          })
+        });
+
+        return res.status(200).json({ success: true, reply: "Fantastic! You are all booked in. I've sent a summary of what you need to our team, and we will talk to you soon!" });
       }
     }
 
-    // 3. Normal conversation reply fallback (Fixed fallbacks in case content is null)
+    // 4. Normal conversation reply fallback
     const replyText = responseMessage.content || "Thanks for messaging! How can I help you today?";
 
     await fetch('https://services.leadconnectorhq.com/conversations/messages', {
