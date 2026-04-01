@@ -7,17 +7,19 @@ export default async function handler(req, res) {
     const data = req.body;
     console.log("📥 Incoming webhook payload:", JSON.stringify(data));
     
-    // 🔥 FIX: Mapping strictly to your GHL execution logs payload
+    // Extracting mapped variables from customData
     const customerMessage = data.customData?.message || data.message?.body || data.message || "Hello";
     const contactId = data.customData?.id || data.contact_id || data.id;
 
-    // Strict validation
+    console.log(`🔍 Extracted -> Message: "${customerMessage}" | Contact ID: ${contactId}`);
+
     if (!contactId) {
-      console.log("⚠️ Missing contact ID in payload.");
+      console.log("⚠️ Stopping: Missing contact ID in payload.");
       return res.status(400).json({ error: 'Missing contact id from GHL' });
     }
 
     // 1. Requesting OpenRouter
+    console.log("🛰️ Sending request to OpenRouter...");
     const openRouterResponse = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -81,6 +83,7 @@ export default async function handler(req, res) {
     });
 
     const aiData = await openRouterResponse.json();
+    console.log("📥 OpenRouter raw response received.");
     
     if (aiData.error) {
       console.error("🚨 OpenRouter API Error Details:", aiData.error);
@@ -96,10 +99,12 @@ export default async function handler(req, res) {
 
     // 2. Executing Function Calls (GHL Automations)
     if (responseMessage.tool_calls) {
+      console.log("⚙️ AI triggered a function call.");
       const toolCall = responseMessage.tool_calls[0];
       const args = JSON.parse(toolCall.function.arguments);
 
       if (toolCall.function.name === "upsertContact") {
+        console.log("🛠️ Executing upsertContact in GHL...");
         await fetch('https://services.leadconnectorhq.com/contacts/', {
           method: 'POST',
           headers: {
@@ -118,6 +123,7 @@ export default async function handler(req, res) {
       }
 
       if (toolCall.function.name === "bookAndAlert") {
+        console.log("🛠️ Executing bookAndAlert in GHL...");
         await fetch('https://services.leadconnectorhq.com/calendars/appointments', {
           method: 'POST',
           headers: {
@@ -152,9 +158,11 @@ export default async function handler(req, res) {
     }
 
     const replyText = responseMessage.content || "Thanks for messaging! How can I help you today?";
+    console.log(`💬 AI response prepared: "${replyText}"`);
 
     // 3. Normal conversation reply
-    await fetch('https://services.leadconnectorhq.com/conversations/messages', {
+    console.log("📤 Sending message back to GHL conversation...");
+    const ghlMessageResponse = await fetch('https://services.leadconnectorhq.com/conversations/messages', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${process.env.GHL_API_KEY}`,
@@ -168,10 +176,18 @@ export default async function handler(req, res) {
       })
     });
 
+    const ghlResponseData = await ghlMessageResponse.json();
+    console.log("📥 GHL message response received:", JSON.stringify(ghlResponseData));
+
+    if (!ghlMessageResponse.ok) {
+      throw new Error(`GHL Message API failed: ${ghlResponseData.message || JSON.stringify(ghlResponseData)}`);
+    }
+
+    console.log("🎉 Process completed successfully.");
     return res.status(200).json({ success: true });
 
   } catch (error) {
-    console.error('Error:', error);
+    console.error('🚨 Process stopped by error:', error);
     return res.status(500).json({ error: error.message || 'Internal server error' });
   }
 }
