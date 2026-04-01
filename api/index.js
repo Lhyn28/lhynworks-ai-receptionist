@@ -21,12 +21,12 @@ export default async function handler(req, res) {
       headers: {
         'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
         'Content-Type': 'application/json',
-        // OpenRouter prefers these site headers for free model traffic
         'HTTP-Referer': 'https://lhynworks.com', 
         'X-Title': 'Lhynworks AI Receptionist'
       },
       body: JSON.stringify({
-        model: 'google/gemini-2.5-flash:free', 
+        // Switched to another highly available free model as a backup
+        model: 'mistralai/mistral-7b-instruct:free', 
         messages: [
           {
             role: 'system',
@@ -81,8 +81,14 @@ export default async function handler(req, res) {
 
     const aiData = await openRouterResponse.json();
     
-    // Safety check if OpenRouter acts up or doesn't deliver a message choice
+    // 🔥 DIAGNOSTIC LOGS: This will output exactly what OpenRouter said in your Vercel logs
+    if (aiData.error) {
+      console.error("🚨 OpenRouter API Error Details:", aiData.error);
+      throw new Error(`OpenRouter Error: ${aiData.error.message || JSON.stringify(aiData.error)}`);
+    }
+
     if (!aiData.choices || aiData.choices.length === 0) {
+      console.error("🚨 OpenRouter returned no choices. Full response:", JSON.stringify(aiData));
       throw new Error("OpenRouter did not return valid completion data.");
     }
     
@@ -93,7 +99,6 @@ export default async function handler(req, res) {
       const toolCall = responseMessage.tool_calls[0];
       const args = JSON.parse(toolCall.function.arguments);
 
-      // Handle the Contact Saving
       if (toolCall.function.name === "upsertContact") {
         await fetch('https://services.leadconnectorhq.com/contacts/', {
           method: 'POST',
@@ -112,7 +117,6 @@ export default async function handler(req, res) {
         return res.status(200).json({ success: true, reply: `Perfect, I've got you in the system, ${args.firstName}! How can I help you today?` });
       }
 
-      // Handle the Calendar Booking
       if (toolCall.function.name === "bookAndAlert") {
         await fetch('https://services.leadconnectorhq.com/calendars/appointments', {
           method: 'POST',
@@ -168,6 +172,6 @@ export default async function handler(req, res) {
 
   } catch (error) {
     console.error('Error:', error);
-    return res.status(500).json({ error: 'Internal server error' });
+    return res.status(500).json({ error: error.message || 'Internal server error' });
   }
 }
