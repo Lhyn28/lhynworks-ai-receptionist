@@ -6,7 +6,6 @@ export default async function handler(req, res) {
   try {
     const data = req.body;
     
-    // Smooth fallbacks to read the data no matter what GHL names it
     const customerMessage = data.message?.body || data.text || data.message || "Hello";
     const contactId = data.contact?.id || data.contact_id || data.id;
 
@@ -25,8 +24,8 @@ export default async function handler(req, res) {
         'X-Title': 'Lhynworks AI Receptionist'
       },
       body: JSON.stringify({
-        // 🔥 FIX: Switched to a highly active, reliable free model endpoint
-        model: 'google/gemini-2.5-flash:free', 
+        // 🔥 FIX: Using 'openrouter/auto' so it auto-picks the best online free model!
+        model: 'openrouter/auto', 
         messages: [
           {
             role: 'system',
@@ -81,7 +80,6 @@ export default async function handler(req, res) {
 
     const aiData = await openRouterResponse.json();
     
-    // Diagnostic logs if OpenRouter still triggers an error
     if (aiData.error) {
       console.error("🚨 OpenRouter API Error Details:", aiData.error);
       throw new Error(`OpenRouter Error: ${aiData.error.message || JSON.stringify(aiData.error)}`);
@@ -151,7 +149,6 @@ export default async function handler(req, res) {
       }
     }
 
-    // 3. Normal conversation reply fallback
     const replyText = responseMessage.content || "Thanks for messaging! How can I help you today?";
 
     await fetch('https://services.leadconnectorhq.com/conversations/messages', {
