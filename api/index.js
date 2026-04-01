@@ -6,29 +6,31 @@ export default async function handler(req, res) {
   try {
     const data = req.body;
     
-    // 🔥 FIX 1: Flexible fallbacks so it reads GHL's actual data structure
+    // Smooth fallbacks to read the data no matter what GHL names it
     const customerMessage = data.message?.body || data.text || data.message || "Hello";
     const contactId = data.contact?.id || data.contact_id || data.id;
 
     if (!customerMessage || !contactId) {
-      console.log("⚠️ Missing data. Received body:", data);
+      console.log("⚠️ Received incomplete body:", data);
       return res.status(400).json({ error: 'Missing data from GHL' });
     }
 
-    // 2. Requesting OpenRouter
+    // 1. Requesting OpenRouter
     const openRouterResponse = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        // OpenRouter prefers these site headers for free model traffic
+        'HTTP-Referer': 'https://lhynworks.com', 
+        'X-Title': 'Lhynworks AI Receptionist'
       },
       body: JSON.stringify({
-        // 🔥 FIX 2: Switched to a robust, highly-compatible model for standard tool handling
-        model: 'mistralai/mistral-7b-instruct:free', 
+        model: 'google/gemini-2.5-flash:free', 
         messages: [
           {
             role: 'system',
-            content: `You are Lhyn's AI double representing Lhynworks. Warm and human.
+            content: `You are Lhyn's AI double representing Lhynworks. You are incredibly polite, warm, and human. 
             Follow this strict sequence of rules:
             1. Greet the user with: "Hi! Good morning! How are you? I'm Lhyn, may I know your name?"
             2. After they give their name, politely ask for their email address: "Great to meet you! Can I get your email real quick? That way we can email you in case you ever need my services."
@@ -79,18 +81,19 @@ export default async function handler(req, res) {
 
     const aiData = await openRouterResponse.json();
     
-    // 🔥 FIX 3: Prevent Vercel from crashing if OpenRouter returns an empty response
+    // Safety check if OpenRouter acts up or doesn't deliver a message choice
     if (!aiData.choices || aiData.choices.length === 0) {
       throw new Error("OpenRouter did not return valid completion data.");
     }
     
     const responseMessage = aiData.choices[0].message;
 
-    // 3. Executing Function Calls (GHL Automations)
+    // 2. Executing Function Calls (GHL Automations)
     if (responseMessage.tool_calls) {
       const toolCall = responseMessage.tool_calls[0];
       const args = JSON.parse(toolCall.function.arguments);
 
+      // Handle the Contact Saving
       if (toolCall.function.name === "upsertContact") {
         await fetch('https://services.leadconnectorhq.com/contacts/', {
           method: 'POST',
@@ -109,6 +112,7 @@ export default async function handler(req, res) {
         return res.status(200).json({ success: true, reply: `Perfect, I've got you in the system, ${args.firstName}! How can I help you today?` });
       }
 
+      // Handle the Calendar Booking
       if (toolCall.function.name === "bookAndAlert") {
         await fetch('https://services.leadconnectorhq.com/calendars/appointments', {
           method: 'POST',
@@ -143,7 +147,7 @@ export default async function handler(req, res) {
       }
     }
 
-    // 4. Normal conversation reply fallback
+    // 3. Normal conversation reply fallback
     const replyText = responseMessage.content || "Thanks for messaging! How can I help you today?";
 
     await fetch('https://services.leadconnectorhq.com/conversations/messages', {
