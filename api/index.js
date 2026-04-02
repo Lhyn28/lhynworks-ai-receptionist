@@ -29,62 +29,58 @@ export default async function handler(req, res) {
       const historyData = await historyResponse.json();
       
       if (historyData.messages) {
+        // Map GHL messages to Google Gemini format
         formattedHistory = historyData.messages.reverse().map(msg => ({
-          role: msg.direction === 'inbound' ? 'user' : 'assistant',
-          content: msg.body
+          role: msg.direction === 'inbound' ? 'user' : 'model',
+          parts: [{ text: msg.body }]
         }));
       }
     } catch (e) {
       console.log("⚠️ Could not retrieve history, proceeding without it:", e.message);
     }
 
-    // Build OpenRouter messages array (No tools needed!)
-    const systemMessage = {
-      role: 'system',
-      content: `You are Lhyn's AI double representing Lhynworks. You are incredibly polite, warm, and human. 
-      Follow this strict sequence of rules:
-      1. Greet the user with: "Hi! Good morning! How are you? I'm Lhyn, may I know your name?"
-      2. After they give their name, politely ask for their email address: "Great to meet you! Can I get your email real quick? That way we can email you in case you ever need my services."
-      3. Use the following knowledge base to answer questions about services and pricing:
-         - About Lhyn: GoHighLevel Tech VA for Coaches & Agencies.
-         - Services: Funnels & Landing Pages, Tech Setup & DNS, Workflows & CRM Management.
-         - Pricing: Custom services generally start at around $250 for smaller setups and up to $1,000+ for full account overhauls. Give ballpark estimates and suggest a call.
-      4. If they agree to book a call, tell them to book via your calendar link or let them know you'll reach out manually.
-      5. If they say "Thank you", politely say "You're welcome!", summarize, and say goodbye.`
-    };
+    // Prepare system instructions
+    const systemInstruction = `You are Lhyn's AI double representing Lhynworks. You are incredibly polite, warm, and human. 
+    Follow this strict sequence of rules:
+    1. Greet the user with: "Hi! Good morning! How are you? I'm Lhyn, may I know your name?"
+    2. After they give their name, politely ask for their email address: "Great to meet you! Can I get your email real quick? That way we can email you in case you ever need my services."
+    3. Use the following knowledge base to answer questions about services and pricing:
+       - About Lhyn: GoHighLevel Tech VA for Coaches & Agencies.
+       - Services: Funnels & Landing Pages, Tech Setup & DNS, Workflows & CRM Management.
+       - Pricing: Custom services generally start at around $250 for smaller setups and up to $1,000+ for full account overhauls. Give ballpark estimates and suggest a call.
+    4. If they agree to book a call, provide your GHL calendar link directly in the chat or let them know you will reach out manually.
+    5. If they say "Thank you", politely say "You're welcome!", summarize, and say goodbye.`;
 
-    const openRouterMessages = [systemMessage, ...formattedHistory];
-    
+    // Add current message to history if it's empty
     if (formattedHistory.length === 0) {
-      openRouterMessages.push({ role: 'user', content: customerMessage });
+      formattedHistory.push({ role: 'user', parts: [{ text: customerMessage }] });
     }
 
-    // 2. Requesting OpenRouter (Pure Text)
-    console.log("🛰️ Sending request to OpenRouter using high-speed Gemma...");
-    const openRouterResponse = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+    // 2. Requesting Google Gemini Direct (Massive Free Tier & Fast)
+    console.log("🛰️ Sending request directly to Google Gemini...");
+    const geminiResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`, {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
-        'Content-Type': 'application/json',
-        'HTTP-Referer': 'https://lhynworks.com', 
-        'X-Title': 'Lhynworks AI Receptionist'
+        'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        model: 'google/gemma-3-4b-it:free', 
-        messages: openRouterMessages
-        // ❌ NO TOOLS OBJECT HERE
+        contents: formattedHistory,
+        systemInstruction: {
+          parts: [{ text: systemInstruction }]
+        }
       })
     });
 
-    const aiData = await openRouterResponse.json();
-    console.log("📥 OpenRouter raw response received.");
+    const aiData = await geminiResponse.json();
+    console.log("📥 Gemini response received.");
     
-    if (aiData.error) throw new Error(`OpenRouter Error: ${aiData.error.message}`);
+    if (aiData.error) throw new Error(`Gemini API Error: ${aiData.error.message}`);
     
-    const replyText = aiData.choices[0].message.content || "Thanks for messaging! How can I help you today?";
+    // Extract reply text from Google's schema
+    const replyText = aiData.candidates?.[0]?.content?.parts?.[0]?.text || "Thanks for messaging! How can I help you today?";
     console.log(`💬 AI response prepared: "${replyText}"`);
 
-    // 3. Normal conversation reply
+    // 3. Normal conversation reply back to GHL
     console.log("📤 Sending message back to GHL conversation...");
     const ghlMessageResponse = await fetch('https://services.leadconnectorhq.com/conversations/messages', {
       method: 'POST',
@@ -101,7 +97,6 @@ export default async function handler(req, res) {
     });
 
     const ghlResponseData = await ghlMessageResponse.json();
-    console.log("📥 GHL message response received:", JSON.stringify(ghlResponseData));
 
     if (!ghlMessageResponse.ok) {
       throw new Error(`GHL Message API failed: ${ghlResponseData.message || JSON.stringify(ghlResponseData)}`);
