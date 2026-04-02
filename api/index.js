@@ -15,7 +15,7 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: 'Missing contact id from GHL' });
     }
 
-    // 1. Fetch conversation history from GHL
+    // 1. Fetch conversation history from GHL using correct conversation scope
     let formattedHistory = [];
     try {
       console.log("📜 Fetching conversation history from GHL...");
@@ -29,34 +29,34 @@ export default async function handler(req, res) {
       const historyData = await historyResponse.json();
       
       if (historyData.messages) {
-        // Map GHL messages to Google Gemini format
+        // Map GHL messages to Google Gemini format (Oldest to Newest)
         formattedHistory = historyData.messages.reverse().map(msg => ({
           role: msg.direction === 'inbound' ? 'user' : 'model',
           parts: [{ text: msg.body }]
         }));
       }
     } catch (e) {
-      console.log("⚠️ Could not retrieve history, proceeding without it:", e.message);
+      console.log("⚠️ Could not retrieve history, proceeding with just the current message:", e.message);
     }
 
     // Prepare system instructions
     const systemInstruction = `You are Lhyn's AI double representing Lhynworks. You are incredibly polite, warm, and human. 
     Follow this strict sequence of rules:
-    1. Greet the user with: "Hi! Good morning! How are you? I'm Lhyn, may I know your name?"
+    1. If this is the start of the conversation, greet the user with: "Hi! Good morning! How are you? I'm Lhyn, may I know your name?"
     2. After they give their name, politely ask for their email address: "Great to meet you! Can I get your email real quick? That way we can email you in case you ever need my services."
     3. Use the following knowledge base to answer questions about services and pricing:
        - About Lhyn: GoHighLevel Tech VA for Coaches & Agencies.
        - Services: Funnels & Landing Pages, Tech Setup & DNS, Workflows & CRM Management.
        - Pricing: Custom services generally start at around $250 for smaller setups and up to $1,000+ for full account overhauls. Give ballpark estimates and suggest a call.
-    4. If they agree to book a call, provide your GHL calendar link directly in the chat or let them know you will reach out manually.
+    4. If they agree to book a call, provide your GHL calendar link directly in the chat: "https://lhynworks.com/calendar"
     5. If they say "Thank you", politely say "You're welcome!", summarize, and say goodbye.`;
 
-    // Add current message to history if it's empty
+    // Ensure the current message is included
     if (formattedHistory.length === 0) {
       formattedHistory.push({ role: 'user', parts: [{ text: customerMessage }] });
     }
 
-    // 2. Requesting Google Gemini Direct (Massive Free Tier & Fast)
+    // 2. Requesting Google Gemini Direct (Fast and free!)
     console.log("🛰️ Sending request directly to Google Gemini...");
     const geminiResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`, {
       method: 'POST',
@@ -76,11 +76,10 @@ export default async function handler(req, res) {
     
     if (aiData.error) throw new Error(`Gemini API Error: ${aiData.error.message}`);
     
-    // Extract reply text from Google's schema
     const replyText = aiData.candidates?.[0]?.content?.parts?.[0]?.text || "Thanks for messaging! How can I help you today?";
     console.log(`💬 AI response prepared: "${replyText}"`);
 
-    // 3. Normal conversation reply back to GHL
+    // 3. Send the message back to GHL conversation
     console.log("📤 Sending message back to GHL conversation...");
     const ghlMessageResponse = await fetch('https://services.leadconnectorhq.com/conversations/messages', {
       method: 'POST',
