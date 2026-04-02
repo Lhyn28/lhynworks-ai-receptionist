@@ -15,22 +15,17 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: 'Missing contact id from GHL' });
     }
 
-    // 1. Bulletproof Memory using GHL Custom Data!
     const formattedHistory = [];
-    
     const previousBotReply = data.customData?.last_bot_reply;
     const previousUserMsg = data.customData?.last_user_message;
 
-    // If GHL passed us the last turn, inject it into the AI's short-term memory
     if (previousBotReply && previousUserMsg) {
       formattedHistory.push({ role: 'user', parts: [{ text: previousUserMsg }] });
       formattedHistory.push({ role: 'model', parts: [{ text: previousBotReply }] });
     }
 
-    // Push the fresh incoming message as the latest turn
     formattedHistory.push({ role: 'user', parts: [{ text: customerMessage }] });
 
-    // Prepare system instructions
     const systemInstruction = `You are Lhyn's AI double representing Lhynworks. You are incredibly polite, warm, and human. 
     Follow this strict sequence of rules:
     1. If this is the start of the conversation, greet the user with: "Hi! Good morning! How are you? I'm Lhyn, may I know your name?"
@@ -39,10 +34,9 @@ export default async function handler(req, res) {
        - About Lhyn: GoHighLevel Tech VA for Coaches & Agencies.
        - Services: Funnels & Landing Pages, Tech Setup & DNS, Workflows & CRM Management.
        - Pricing: Custom services generally start at around $250 for smaller setups and up to $1,000+ for full account overhauls. Give ballpark estimates and suggest a call.
-    4. If they agree to book a call, provide your GHL calendar link directly in the chat: "https://lhynworks.com/calendar"
+    4. If they agree to book a call, use the 'bookAndAlert' function to book the call. If they just want to do it themselves, provide your GHL calendar link directly in the chat: "https://lhynworks.com/calendar"
     5. If they say "Thank you", politely say "You're welcome!", summarize, and say goodbye.`;
 
-    // 2. Requesting Google Gemini Direct (Fast and free!)
     console.log("🛰️ Sending request directly to Google Gemini...");
     const geminiResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`, {
       method: 'POST',
@@ -53,7 +47,23 @@ export default async function handler(req, res) {
         contents: formattedHistory,
         systemInstruction: {
           parts: [{ text: systemInstruction }]
-        }
+        },
+        tools: [{
+          functionDeclarations: [
+            {
+              name: "bookAndAlert",
+              description: "Books the client on the calendar for an overview call.",
+              parameters: {
+                type: "OBJECT",
+                properties: {
+                  clientProblem: { type: "STRING", description: "A quick summary of what the client needs help with." },
+                  startTime: { type: "STRING", description: "ISO 8601 format date time for the appointment (e.g., 2026-04-02T10:00:00Z)." }
+                },
+                required: ["clientProblem", "startTime"]
+              }
+            }
+          ]
+        }]
       })
     });
 
@@ -62,10 +72,70 @@ export default async function handler(req, res) {
     
     if (aiData.error) throw new Error(`Gemini API Error: ${aiData.error.message}`);
     
-    const replyText = aiData.candidates?.[0]?.content?.parts?.[0]?.text || "Thanks for messaging! How can I help you today?";
-    console.log(`💬 AI response prepared: "${replyText}"`);
+    const responseMessage = aiData.candidates?.[0]?.content;
+    const functionCall = responseMessage?.parts?.find(part => part.functionCall);
 
-    // 3. Send the message back to GHL conversation
+    // 🚀 Handle the automated booking
+    if (functionCall) {
+      const args = functionCall.functionCall.args;
+      console.log(`📞 AI wants to book a call. Args: ${JSON.stringify(args)}`);
+
+      await fetch('https://services.leadconnectorhq.com/calendars/appointments', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${process.env.GHL_API_KEY}`,
+          'Content-Type': 'application/json',
+          'Version': '2021-07-28'
+        },
+        body: JSON.stringify({
+          calendarId: process.env.GHL_CALENDAR_ID,
+          contactId: contactId,
+          startTime: args.startTime,
+          title: `AI Chat - ${args.clientProblem}`
+        })
+      });
+
+      await fetch('https://services.leadconnectorhq.com/conversations/messages', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${process.env.GHL_API_KEY}`,
+          'Content-Type': 'application/json',
+          'Version': '2021-04-15'
+        },
+        body: JSON.stringify({
+          type: 'Live_Chat',
+          contactId: contactId,
+          message: "Fantastic! You are all booked in. We will talk to you soon!"
+        })
+      });
+
+      return res.status(200).json({ success: true });
+    }
+
+    const replyText = responseMessage?.parts?.[0]?.text || "Thanks for messaging! How can I help you today?";
+
+    // ⚡ NEW: Automatically update the contact name in GHL if the bot just asked for it
+    if (previousBotReply && previousBotReply.includes("may I know your name?")) {
+      console.log(`📝 Attempting to save customer name: ${customerMessage}`);
+      
+      try {
+        await fetch(`https://services.leadconnectorhq.com/contacts/${contactId}`, {
+          method: 'PUT',
+          headers: {
+            'Authorization': `Bearer ${process.env.GHL_API_KEY}`,
+            'Content-Type': 'application/json',
+            'Version': '2021-07-28'
+          },
+          body: JSON.stringify({
+            firstName: customerMessage
+          })
+        });
+        console.log("✅ Contact name updated successfully in GHL.");
+      } catch (err) {
+        console.log("⚠️ Failed to update name in GHL:", err.message);
+      }
+    }
+
     console.log("📤 Sending message back to GHL conversation...");
     const ghlMessageResponse = await fetch('https://services.leadconnectorhq.com/conversations/messages', {
       method: 'POST',
@@ -82,10 +152,7 @@ export default async function handler(req, res) {
     });
 
     const ghlResponseData = await ghlMessageResponse.json();
-
-    if (!ghlMessageResponse.ok) {
-      throw new Error(`GHL Message API failed: ${ghlResponseData.message || JSON.stringify(ghlResponseData)}`);
-    }
+    if (!ghlMessageResponse.ok) throw new Error(`GHL Message API failed: ${ghlResponseData.message || JSON.stringify(ghlResponseData)}`);
 
     console.log("🎉 Process completed successfully.");
     return res.status(200).json({ success: true });
