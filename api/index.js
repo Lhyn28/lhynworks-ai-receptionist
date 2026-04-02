@@ -15,29 +15,20 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: 'Missing contact id from GHL' });
     }
 
-    // 1. Fetch conversation history from GHL using correct conversation scope
-    let formattedHistory = [];
-    try {
-      console.log("📜 Fetching conversation history from GHL...");
-      const historyResponse = await fetch(`https://services.leadconnectorhq.com/conversations/messages?contactId=${contactId}&limit=10`, {
-        method: 'GET',
-        headers: {
-          'Authorization': `Bearer ${process.env.GHL_API_KEY}`,
-          'Version': '2021-04-15'
-        }
-      });
-      const historyData = await historyResponse.json();
-      
-      if (historyData.messages) {
-        // Map GHL messages to Google Gemini format (Oldest to Newest)
-        formattedHistory = historyData.messages.reverse().map(msg => ({
-          role: msg.direction === 'inbound' ? 'user' : 'model',
-          parts: [{ text: msg.body }]
-        }));
-      }
-    } catch (e) {
-      console.log("⚠️ Could not retrieve history, proceeding with just the current message:", e.message);
+    // 1. Bulletproof Memory using GHL Custom Data!
+    const formattedHistory = [];
+    
+    const previousBotReply = data.customData?.last_bot_reply;
+    const previousUserMsg = data.customData?.last_user_message;
+
+    // If GHL passed us the last turn, inject it into the AI's short-term memory
+    if (previousBotReply && previousUserMsg) {
+      formattedHistory.push({ role: 'user', parts: [{ text: previousUserMsg }] });
+      formattedHistory.push({ role: 'model', parts: [{ text: previousBotReply }] });
     }
+
+    // Push the fresh incoming message as the latest turn
+    formattedHistory.push({ role: 'user', parts: [{ text: customerMessage }] });
 
     // Prepare system instructions
     const systemInstruction = `You are Lhyn's AI double representing Lhynworks. You are incredibly polite, warm, and human. 
@@ -50,11 +41,6 @@ export default async function handler(req, res) {
        - Pricing: Custom services generally start at around $250 for smaller setups and up to $1,000+ for full account overhauls. Give ballpark estimates and suggest a call.
     4. If they agree to book a call, provide your GHL calendar link directly in the chat: "https://lhynworks.com/calendar"
     5. If they say "Thank you", politely say "You're welcome!", summarize, and say goodbye.`;
-
-    // Ensure the current message is included
-    if (formattedHistory.length === 0) {
-      formattedHistory.push({ role: 'user', parts: [{ text: customerMessage }] });
-    }
 
     // 2. Requesting Google Gemini Direct (Fast and free!)
     console.log("🛰️ Sending request directly to Google Gemini...");
